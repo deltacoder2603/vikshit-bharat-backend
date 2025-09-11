@@ -4,9 +4,25 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const { Client } = require('pg');
 require('dotenv').config();
+const cors = require('cors');
+
+// Configure CORS
+const corsOptions = {
+  origin: [
+    'http://localhost:3000',        // Your local development server
+    'http://localhost:5173',        // Vite default port (backup)
+    'https://your-frontend-domain.com', // Your production frontend domain
+    'https://vikshit-kanpur.vercel.app', // If you deploy frontend to Vercel
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  optionsSuccessStatus: 200
+};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.use(cors(corsOptions));
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));

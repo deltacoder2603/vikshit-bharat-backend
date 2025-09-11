@@ -52,21 +52,21 @@ async function createDummyData() {
     
     // Create 10 dummy users
     const users = [
-      ['John Doe', 'john@example.com', 'john_doe', 'password123', '123 Main St, City', '1234567890'],
-      ['Jane Smith', 'jane@example.com', 'jane_smith', 'password123', '456 Oak Ave, City', '2345678901'],
-      ['Mike Johnson', 'mike@example.com', 'mike_johnson', 'password123', '789 Pine Rd, City', '3456789012'],
-      ['Sarah Wilson', 'sarah@example.com', 'sarah_wilson', 'password123', '321 Elm St, City', '4567890123'],
-      ['David Brown', 'david@example.com', 'david_brown', 'password123', '654 Maple Dr, City', '5678901234'],
-      ['Lisa Davis', 'lisa@example.com', 'lisa_davis', 'password123', '987 Cedar Ln, City', '6789012345'],
-      ['Tom Miller', 'tom@example.com', 'tom_miller', 'password123', '147 Birch St, City', '7890123456'],
-      ['Amy Garcia', 'amy@example.com', 'amy_garcia', 'password123', '258 Spruce Ave, City', '8901234567'],
-      ['Chris Martinez', 'chris@example.com', 'chris_martinez', 'password123', '369 Willow Rd, City', '9012345678'],
-      ['Emma Rodriguez', 'emma@example.com', 'emma_rodriguez', 'password123', '741 Ash Blvd, City', '0123456789']
+      ['John Doe', 'john@example.com', '1234567890', '123456789012', 'password123', '123 Main St, City'],
+      ['Jane Smith', 'jane@example.com', '2345678901', '234567890123', 'password123', '456 Oak Ave, City'],
+      ['Mike Johnson', 'mike@example.com', '3456789012', '345678901234', 'password123', '789 Pine Rd, City'],
+      ['Sarah Wilson', 'sarah@example.com', '4567890123', '456789012345', 'password123', '321 Elm St, City'],
+      ['David Brown', 'david@example.com', '5678901234', '567890123456', 'password123', '654 Maple Dr, City'],
+      ['Lisa Davis', 'lisa@example.com', '6789012345', '678901234567', 'password123', '987 Cedar Ln, City'],
+      ['Tom Miller', 'tom@example.com', '7890123456', '789012345678', 'password123', '147 Birch St, City'],
+      ['Amy Garcia', 'amy@example.com', '8901234567', '890123456789', 'password123', '258 Spruce Ave, City'],
+      ['Chris Martinez', 'chris@example.com', '9012345678', '901234567890', 'password123', '369 Willow Rd, City'],
+      ['Emma Rodriguez', 'emma@example.com', '0123456789', '012345678901', 'password123', '741 Ash Blvd, City']
     ];
     
     for (const user of users) {
       await client.query(`
-        INSERT INTO users (name, email, username, password, address, phone_number)
+        INSERT INTO users (name, email, phone_number, aadhar, password, address)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, user);
     }
@@ -109,20 +109,58 @@ async function createDummyData() {
 // Initialize database tables
 async function initializeDatabase() {
   try {
-    // Create Users table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        address TEXT,
-        phone_number VARCHAR(20),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+    // Check if users table exists and its structure
+    const usersTableExists = await client.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'users'
+      );
     `);
+
+    if (usersTableExists.rows[0].exists) {
+      // Table exists, check if it has aadhar column
+      const columns = await client.query(`
+        SELECT column_name FROM information_schema.columns 
+        WHERE table_name = 'users' AND table_schema = 'public';
+      `);
+      
+      const columnNames = columns.rows.map(row => row.column_name);
+      
+      if (!columnNames.includes('aadhar')) {
+        // Add aadhar column and update constraints
+        console.log('Adding aadhar column to existing users table...');
+        await client.query(`ALTER TABLE users ADD COLUMN aadhar VARCHAR(12)`);
+        await client.query(`ALTER TABLE users ADD CONSTRAINT users_aadhar_unique UNIQUE (aadhar)`);
+        await client.query(`ALTER TABLE users ALTER COLUMN phone_number SET NOT NULL`);
+        await client.query(`ALTER TABLE users ALTER COLUMN aadhar SET NOT NULL`);
+        
+        // Remove username column if it exists
+        if (columnNames.includes('username')) {
+          await client.query(`ALTER TABLE users DROP COLUMN IF EXISTS username`);
+        }
+        
+        console.log('Users table migration completed successfully');
+      } else {
+        console.log('Users table already has aadhar column');
+      }
+    } else {
+      // Create new Users table
+      await client.query(`
+        CREATE TABLE users (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          phone_number VARCHAR(20) UNIQUE NOT NULL,
+          aadhar VARCHAR(12) UNIQUE NOT NULL,
+          password VARCHAR(255) NOT NULL,
+          address TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('Created new users table with aadhar column');
+    }
 
     // Check if problems table exists and its structure
     const tableExists = await client.query(`
@@ -407,19 +445,81 @@ app.post('/api/admin/problems/:problem_id/complete', upload.single('completed_im
   }
 });
 
+// User Registration Route
+app.post('/api/users/register', async (req, res) => {
+  try {
+    const { name, email, phone_number, aadhar, password } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !phone_number || !aadhar || !password) {
+      return res.status(400).json({ 
+        error: 'All fields are required: name, email, phone_number, aadhar, password' 
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Validate phone number (10 digits)
+    const phoneRegex = /^\d{10}$/;
+    if (!phoneRegex.test(phone_number)) {
+      return res.status(400).json({ error: 'Phone number must be exactly 10 digits' });
+    }
+
+    // Validate Aadhar (12 digits)
+    const aadharRegex = /^\d{12}$/;
+    if (!aadharRegex.test(aadhar)) {
+      return res.status(400).json({ error: 'Aadhar must be exactly 12 digits' });
+    }
+
+    // Validate password length
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    }
+
+    // Check if user already exists
+    const existingUser = await client.query(`
+      SELECT id FROM users 
+      WHERE email = $1 OR phone_number = $2 OR aadhar = $3
+    `, [email, phone_number, aadhar]);
+
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ error: 'User already exists with this email, phone, or aadhar' });
+    }
+
+    // Create new user
+    const result = await client.query(`
+      INSERT INTO users (name, email, phone_number, aadhar, password)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, name, email, phone_number, aadhar, created_at
+    `, [name, email, phone_number, aadhar, password]);
+
+    res.status(201).json({ 
+      message: 'User registered successfully', 
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed', details: error.message });
+  }
+});
+
 // User Authentication Routes
 app.post('/api/users/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { email, password } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
 
     const result = await client.query(`
-      SELECT id, name, email, username FROM users 
-      WHERE username = $1 AND password = $2
-    `, [username, password]);
+      SELECT id, name, email, phone_number, aadhar FROM users 
+      WHERE email = $1 AND password = $2
+    `, [email, password]);
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -437,7 +537,7 @@ app.get('/api/users/:user_id', async (req, res) => {
     const { user_id } = req.params;
 
     const result = await client.query(`
-      SELECT id, name, email, username, address, phone_number, created_at, updated_at 
+      SELECT id, name, email, phone_number, aadhar, address, created_at, updated_at 
       FROM users WHERE id = $1
     `, [user_id]);
 
@@ -476,6 +576,7 @@ async function startServer() {
       console.log('  GET /api/problems/user/:user_id - Get user\'s problems');
       console.log('  GET /api/admin/problems - Get all problems (admin)');
       console.log('  POST /api/admin/problems/:problem_id/complete - Mark problem completed (admin)');
+      console.log('  POST /api/users/register - User registration');
       console.log('  POST /api/users/login - User login');
       console.log('  GET /api/users/:user_id - Get user details');
       console.log('  GET /health - Health check');

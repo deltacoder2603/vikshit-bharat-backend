@@ -6,14 +6,9 @@ const { Client } = require('pg');
 require('dotenv').config();
 const cors = require('cors');
 
-// Configure CORS
+// Configure CORS - Allow all origins
 const corsOptions = {
-  origin: [
-    'http://localhost:3000',        // Your local development server
-    'http://localhost:5173',        // Vite default port (backup)
-    'https://your-frontend-domain.com', // Your production frontend domain
-    'https://vikshit-kanpur.vercel.app', // If you deploy frontend to Vercel
-  ],
+  origin: true, // Allow all origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],

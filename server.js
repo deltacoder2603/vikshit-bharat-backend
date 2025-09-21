@@ -1269,6 +1269,117 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== ADDITIONAL ANALYTICS ROUTES ====================
+
+// Get Ward-wise Analytics
+app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
+  try {
+    if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Unauthorized access' });
+    }
+
+    // Mock ward data for now - in production, you'd have ward information in problems table
+    const result = await client.query(`
+      SELECT 
+        CASE 
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1'
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2'
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3'
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4'
+          ELSE 'Ward 5'
+        END as ward,
+        COUNT(*) as total_complaints,
+        COUNT(*) FILTER (WHERE status = 'completed') as resolved,
+        COUNT(*) FILTER (WHERE status = 'not completed') as pending
+      FROM problems
+      GROUP BY ward
+      ORDER BY ward
+    `);
+
+    res.json({ wards: result.rows });
+  } catch (error) {
+    console.error('Get ward analytics error:', error);
+    res.status(500).json({ error: 'Failed to get ward analytics', details: error.message });
+  }
+});
+
+// Get Real-time Activity Data (hourly breakdown for today)
+app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
+  try {
+    if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Unauthorized access' });
+    }
+
+    const result = await client.query(`
+      SELECT 
+        EXTRACT(HOUR FROM created_at) as hour,
+        COUNT(*) as complaints,
+        COUNT(*) FILTER (WHERE status = 'completed') as resolved
+      FROM problems 
+      WHERE DATE(created_at) = CURRENT_DATE
+      GROUP BY EXTRACT(HOUR FROM created_at)
+      ORDER BY hour
+    `);
+
+    // Fill in missing hours with 0 values
+    const activityData = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const hourData = result.rows.find(row => parseInt(row.hour) === hour);
+      activityData.push({
+        time: `${hour.toString().padStart(2, '0')}:00`,
+        complaints: hourData ? parseInt(hourData.complaints) : 0,
+        resolved: hourData ? parseInt(hourData.resolved) : 0
+      });
+    }
+
+    res.json({ activity: activityData });
+  } catch (error) {
+    console.error('Get activity analytics error:', error);
+    res.status(500).json({ error: 'Failed to get activity analytics', details: error.message });
+  }
+});
+
+// Get Recent Activity Feed
+app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) => {
+  try {
+    if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Unauthorized access' });
+    }
+
+    const { limit = 20 } = req.query;
+
+    const result = await client.query(`
+      SELECT 
+        psh.problem_id,
+        psh.status,
+        psh.notes,
+        psh.created_at,
+        u.name as updated_by_name,
+        p.problem_categories,
+        p.others_text
+      FROM problem_status_history psh
+      JOIN users u ON psh.updated_by_id = u.id
+      JOIN problems p ON psh.problem_id = p.id
+      ORDER BY psh.created_at DESC
+      LIMIT $1
+    `, [parseInt(limit.toString())]);
+
+    const activities = result.rows.map(row => ({
+      id: row.problem_id,
+      action: row.status,
+      description: row.notes || `Status changed to ${row.status}`,
+      user: row.updated_by_name,
+      timestamp: row.created_at,
+      category: row.problem_categories[0] || 'Other'
+    }));
+
+    res.json({ activities });
+  } catch (error) {
+    console.error('Get recent activity error:', error);
+    res.status(500).json({ error: 'Failed to get recent activity', details: error.message });
+  }
+});
+
 // ==================== HEALTH CHECK ROUTE ====================
 
 app.get('/health', (req, res) => {

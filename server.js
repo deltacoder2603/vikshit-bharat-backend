@@ -622,7 +622,18 @@ app.get('/api/admin/problems', authenticateToken, async (req, res) => {
 
     // Filter by department for department heads
     if (req.user.role === 'department-head') {
-      query += ` WHERE p.assigned_department = $1`;
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories  
+      query += ` WHERE (p.assigned_department = $1 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
       queryParams.push(req.user.department);
     }
 
@@ -1137,7 +1148,19 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      departmentFilter = 'WHERE p.assigned_department = $1';
+      // For department heads, show problems assigned to their department OR problems in their category
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE (p.assigned_department = $1 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
       queryParams.push(req.user.department);
     }
 
@@ -1323,24 +1346,47 @@ app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized access' });
     }
 
-    // Mock ward data for now - in production, you'd have ward information in problems table
+    let departmentFilter = '';
+    let queryParams = [];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      departmentFilter = 'WHERE (assigned_department = $1 OR problem_categories && $2)';
+      queryParams.push(req.user.department, categories);
+    }
+
+    // Ward data based on geographic location with department filtering
     const result = await client.query(`
       SELECT 
         CASE 
-          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1'
-          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2'
-          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3'
-          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4'
-          ELSE 'Ward 5'
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1 - Civil Lines'
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2 - Mall Road'
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3 - Swaroop Nagar'
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4 - Kidwai Nagar'
+          ELSE 'Ward 5 - Other Areas'
         END as name,
         COUNT(*) as total_complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as resolved_complaints,
         COUNT(*) FILTER (WHERE status = 'not completed') as pending_complaints,
-        50000 + (RANDOM() * 50000)::integer as population
-      FROM problems
-      GROUP BY name
+        CASE 
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 75000
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 85000
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 65000
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 90000
+          ELSE 55000
+        END as population
+      FROM problems p
+      ${departmentFilter}
+      GROUP BY name, population
       ORDER BY name
-    `);
+    `, queryParams);
 
     // Ensure all numeric values are properly formatted
     const wards = result.rows.map(ward => ({
@@ -1370,16 +1416,36 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized access' });
     }
 
+    let departmentFilter = 'WHERE DATE(created_at) = CURRENT_DATE';
+    let queryParams = [];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE DATE(created_at) = CURRENT_DATE AND (assigned_department = $1 OR 
+        problem_categories::text LIKE '%Garbage%' OR 
+        problem_categories::text LIKE '%सफाई%' OR
+        problem_categories::text LIKE '%Waste%')`;
+      queryParams.push(req.user.department);
+    }
+
     const result = await client.query(`
       SELECT 
         EXTRACT(HOUR FROM created_at) as hour,
         COUNT(*) as complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as resolved
       FROM problems 
-      WHERE DATE(created_at) = CURRENT_DATE
+      ${departmentFilter}
       GROUP BY EXTRACT(HOUR FROM created_at)
       ORDER BY hour
-    `);
+    `, queryParams);
 
     // Fill in missing hours with 0 values
     const activityData = [];
@@ -1412,6 +1478,26 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
 
     const { limit = 20 } = req.query;
 
+    let departmentFilter = '';
+    let queryParams = [parseInt(limit.toString())];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE (p.assigned_department = $2 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
+      queryParams.push(req.user.department);
+    }
+
     const result = await client.query(`
       SELECT 
         psh.problem_id,
@@ -1424,9 +1510,10 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
       FROM problem_status_history psh
       JOIN users u ON psh.updated_by_id = u.id
       JOIN problems p ON psh.problem_id = p.id
+      ${departmentFilter}
       ORDER BY psh.created_at DESC
       LIMIT $1
-    `, [parseInt(limit.toString())]);
+    `, queryParams);
 
     const activities = result.rows.map(row => ({
       id: row.problem_id,

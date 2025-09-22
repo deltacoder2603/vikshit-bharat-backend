@@ -457,7 +457,7 @@ app.post('/api/analyze-image', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     
     const prompt = `You are analyzing civic issue images. Identify if the photo shows any of the following problems:
 • Garbage & Waste (roadside dumps, no dustbins, poor segregation)

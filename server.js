@@ -1479,6 +1479,64 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Update existing problems with department assignments (Admin only)
+app.post('/api/admin/update-problems-departments', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'district-magistrate') {
+      return res.status(403).json({ error: 'Only District Magistrate can update problem departments' });
+    }
+
+    console.log('🔄 Updating existing problems with department assignments...');
+    
+    // Get all problems without department assignments
+    const result = await client.query(`
+      SELECT id, problem_categories 
+      FROM problems 
+      WHERE assigned_department IS NULL OR assigned_department = ''
+    `);
+    
+    let updatedCount = 0;
+    let errorCount = 0;
+    
+    for (const problem of result.rows) {
+      try {
+        const assignedDepartments = assignDepartmentsToProblem(problem.problem_categories);
+        const primaryDepartment = assignedDepartments[0];
+        
+        // Update the problem with the first assigned department
+        await client.query(`
+          UPDATE problems 
+          SET assigned_department = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2
+        `, [primaryDepartment, problem.id]);
+        
+        // Add status history for the assignment
+        await client.query(`
+          INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
+          VALUES ($1, $2, $3, $4)
+        `, [problem.id, 'assigned', req.user.id, `Automatically assigned to ${primaryDepartment}`]);
+        
+        updatedCount++;
+      } catch (error) {
+        console.error(`Error updating problem ${problem.id}:`, error);
+        errorCount++;
+      }
+    }
+    
+    console.log(`✅ Updated ${updatedCount} problems with department assignments`);
+    
+    res.json({ 
+      message: 'Problems updated successfully',
+      updatedCount,
+      errorCount,
+      totalProcessed: result.rows.length
+    });
+  } catch (error) {
+    console.error('Error updating problems:', error);
+    res.status(500).json({ error: 'Failed to update problems', details: error.message });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -1689,6 +1747,11 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-startServer();
-
-module.exports = { client, assignDepartmentsToProblem, updateExistingProblemsWithDepartments };
+// For Vercel deployment, export the app instead of starting the server
+if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+  // Export for Vercel
+  module.exports = app;
+} else {
+  // Start server locally
+  startServer();
+}

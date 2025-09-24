@@ -72,147 +72,116 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Initialize database tables (same as before)
-async function initializeDatabase() {
+// Department assignment mapping based on problem categories
+const DEPARTMENT_ASSIGNMENT_MAP = {
+  // Garbage & Waste Management
+  'Garbage & Waste': 'सफाई विभाग',
+  'Garbage & Waste (roadside dumps, no dustbins, poor segregation)': 'सफाई विभाग',
+  'Garbage & Waste Management': 'सफाई विभाग',
+  'सफाई और कचरा प्रबंधन': 'सफाई विभाग',
+  'Pollution (open garbage burning)': 'सफाई विभाग',
+  
+  // Water & Sanitation
+  'Water Issues': 'जल विभाग',
+  'Water Supply': 'जल विभाग',
+  'जल आपूर्ति': 'जल विभाग',
+  'Water & Sanitation': 'जल विभाग',
+  'Drainage & Sewage': 'जल विभाग',
+  'Drainage & Sewage (open drains, choked sewers, waterlogging)': 'जल विभाग',
+  
+  // Roads & Transportation
+  'Traffic & Roads': 'सड़क विभाग',
+  'Traffic & Roads (encroachments, potholes, heavy congestion)': 'सड़क विभाग',
+  'Roads & Transportation': 'सड़क और परिवहन',
+  'सड़क और परिवहन': 'सड़क विभाग',
+  'Roads & Infrastructure': 'सड़क विभाग',
+  
+  // Electricity & Power
+  'Electricity Issues': 'विद्युत विभाग',
+  'Electricity': 'विद्युत विभाग',
+  'बिजली': 'विद्युत विभाग',
+  'Power & Utilities': 'विद्युत विभाग',
+  
+  // Public Spaces & Environment
+  'Public Spaces': 'सफाई विभाग',
+  'Public Spaces (poor toilets, park encroachment, less greenery)': 'सफाई विभाग',
+  'Pollution': 'सफाई विभाग',
+  'Pollution (dirty Ganga, factory emissions, open garbage burning)': 'सफाई विभाग',
+  
+  // Housing & Urban Development
+  'Housing & Slums': 'नगर विकास विभाग',
+  'Housing & Slums (unplanned colonies, lack of sanitation & housing)': 'नगर विकास विभाग',
+  
+  // Education
+  'Education': 'शिक्षा विभाग',
+  
+  // Health
+  'Health': 'स्वास्थ्य विभाग',
+  
+  // Other Issues
+  'Other Issues': 'सामान्य प्रशासन',
+  'Other Issues (broken streetlights, stray animals, no parking)': 'सामान्य प्रशासन'
+};
+
+// Function to automatically assign departments based on problem categories
+function assignDepartmentsToProblem(problemCategories) {
+  const assignedDepartments = new Set();
+  
+  // Check each category and assign to appropriate departments
+  problemCategories.forEach(category => {
+    const department = DEPARTMENT_ASSIGNMENT_MAP[category];
+    if (department) {
+      assignedDepartments.add(department);
+    }
+  });
+  
+  // If no specific department found, assign to general administration
+  if (assignedDepartments.size === 0) {
+    assignedDepartments.add('सामान्य प्रशासन');
+  }
+  
+  return Array.from(assignedDepartments);
+}
+
+// Function to update existing problems with department assignments
+async function updateExistingProblemsWithDepartments() {
   try {
-    // Users table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        phone_number VARCHAR(20) UNIQUE NOT NULL,
-        aadhar VARCHAR(12) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        address TEXT,
-        role VARCHAR(50) DEFAULT 'citizen',
-        department VARCHAR(255),
-        avatar_url TEXT,
-        is_active BOOLEAN DEFAULT true,
-        last_login TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
+    console.log('🔄 Updating existing problems with department assignments...');
+    
+    // Get all problems without department assignments
+    const result = await client.query(`
+      SELECT id, problem_categories 
+      FROM problems 
+      WHERE assigned_department IS NULL OR assigned_department = ''
     `);
-
-    // Problems table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS problems (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
-        problem_categories TEXT[] NOT NULL,
-        others_text TEXT,
-        user_image_base64 TEXT NOT NULL,
-        user_image_mimetype VARCHAR(100) NOT NULL,
-        admin_image_base64 TEXT,
-        admin_image_mimetype VARCHAR(100),
-        latitude DECIMAL(10, 8) NOT NULL,
-        longitude DECIMAL(11, 8) NOT NULL,
-        status VARCHAR(50) DEFAULT 'not completed',
-        priority VARCHAR(20) DEFAULT 'medium',
-        assigned_worker_id INTEGER REFERENCES users(id),
-        assigned_department VARCHAR(255),
-        estimated_completion DATE,
-        completion_notes TEXT,
-        citizen_rating INTEGER CHECK (citizen_rating >= 1 AND citizen_rating <= 5),
-        citizen_feedback TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Workers table (extended user information for field workers)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS workers (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) UNIQUE,
-        specializations TEXT[],
-        efficiency_rating DECIMAL(3, 2) DEFAULT 0.0,
-        total_assigned INTEGER DEFAULT 0,
-        total_completed INTEGER DEFAULT 0,
-        avg_completion_time DECIMAL(5, 2), -- in hours
-        current_status VARCHAR(50) DEFAULT 'available',
-        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        location_lat DECIMAL(10, 8),
-        location_lng DECIMAL(11, 8),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Departments table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS departments (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        name_en VARCHAR(255) NOT NULL,
-        head_id INTEGER REFERENCES users(id),
-        description TEXT,
-        phone VARCHAR(20),
-        email VARCHAR(255),
-        location TEXT,
-        budget DECIMAL(15, 2),
-        established_year INTEGER,
-        status VARCHAR(50) DEFAULT 'active',
-        total_workers INTEGER DEFAULT 0,
-        total_complaints INTEGER DEFAULT 0,
-        resolved_complaints INTEGER DEFAULT 0,
-        avg_resolution_time DECIMAL(5, 2), -- in days
-        rating DECIMAL(3, 2) DEFAULT 0.0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Notifications table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(500) NOT NULL,
-        message TEXT NOT NULL,
-        type VARCHAR(50) NOT NULL, -- urgent, info, success, warning
-        priority VARCHAR(20) DEFAULT 'medium', -- high, medium, low
-        sender_id INTEGER REFERENCES users(id),
-        recipient_ids INTEGER[],
-        department VARCHAR(255),
-        category VARCHAR(50) NOT NULL, -- system, complaint, worker, citizen, department, emergency
-        related_problem_id INTEGER REFERENCES problems(id),
-        action_required BOOLEAN DEFAULT false,
-        expires_at TIMESTAMP,
-        is_read BOOLEAN DEFAULT false,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Problem status history table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS problem_status_history (
-        id SERIAL PRIMARY KEY,
-        problem_id INTEGER REFERENCES problems(id),
-        status VARCHAR(50) NOT NULL,
-        updated_by_id INTEGER REFERENCES users(id),
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Analytics table for storing computed metrics
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS analytics (
-        id SERIAL PRIMARY KEY,
-        metric_name VARCHAR(100) NOT NULL,
-        metric_value DECIMAL(15, 2),
-        metric_data JSONB,
-        department VARCHAR(255),
-        date_range_start DATE,
-        date_range_end DATE,
-        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    console.log('All database tables initialized successfully');
+    
+    let updatedCount = 0;
+    
+    for (const problem of result.rows) {
+      const assignedDepartments = assignDepartmentsToProblem(problem.problem_categories);
+      
+      // Update the problem with the first assigned department (primary assignment)
+      const primaryDepartment = assignedDepartments[0];
+      
+      await client.query(`
+        UPDATE problems 
+        SET assigned_department = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+      `, [primaryDepartment, problem.id]);
+      
+      // Add status history for the assignment
+      await client.query(`
+        INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
+        VALUES ($1, $2, $3, $4)
+      `, [problem.id, 'assigned', 1, `Automatically assigned to ${primaryDepartment}`]);
+      
+      updatedCount++;
+    }
+    
+    console.log(`✅ Updated ${updatedCount} problems with department assignments`);
+    return updatedCount;
   } catch (error) {
-    console.error('Database initialization error:', error);
+    console.error('❌ Error updating existing problems:', error);
     throw error;
   }
 }
@@ -230,6 +199,8 @@ function convertImageToBase64(fileBuffer, mimeType) {
     throw new Error('Failed to convert image to base64');
   }
 }
+
+
 
 // Generate JWT token
 function generateToken(user) {
@@ -504,7 +475,7 @@ Be specific: include only the categories clearly visible in the photo, not all o
   }
 });
 
-// Submit Problem
+// Submit Problem (UPDATED with automatic department assignment)
 app.post('/api/problems', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     const { problem_categories, others_text, latitude, longitude, priority = 'medium' } = req.body;
@@ -546,12 +517,16 @@ app.post('/api/problems', authenticateToken, upload.single('image'), async (req,
     // Convert image to base64
     const imageData = convertImageToBase64(req.file.buffer, req.file.mimetype);
 
+    // Automatically assign departments based on problem categories
+    const assignedDepartments = assignDepartmentsToProblem(categoriesArray);
+    const primaryDepartment = assignedDepartments[0]; // Use first department as primary
+
     // Insert into database
     const result = await client.query(`
-      INSERT INTO problems (user_id, problem_categories, others_text, user_image_base64, user_image_mimetype, latitude, longitude, priority, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO problems (user_id, problem_categories, others_text, user_image_base64, user_image_mimetype, latitude, longitude, priority, status, assigned_department)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *
-    `, [req.user.id, categoriesArray, others_text || null, imageData.base64, imageData.mimeType, lat, lng, priority, 'not completed']);
+    `, [req.user.id, categoriesArray, others_text || null, imageData.base64, imageData.mimeType, lat, lng, priority, 'not completed', primaryDepartment]);
 
     const problem = result.rows[0];
 
@@ -561,9 +536,39 @@ app.post('/api/problems', authenticateToken, upload.single('image'), async (req,
       VALUES ($1, $2, $3, $4)
     `, [problem.id, 'not completed', req.user.id, 'Problem submitted']);
 
+    // Add assignment history
+    await client.query(`
+      INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
+      VALUES ($1, $2, $3, $4)
+    `, [problem.id, 'assigned', req.user.id, `Automatically assigned to ${primaryDepartment}`]);
+
+    // If multiple departments are responsible, create notifications for other departments
+    if (assignedDepartments.length > 1) {
+      for (let i = 1; i < assignedDepartments.length; i++) {
+        await client.query(`
+          INSERT INTO notifications (title, message, type, priority, sender_id, department, category, related_problem_id, action_required)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [
+          `Multi-department Problem Assignment`,
+          `Problem #${problem.id} has been assigned to ${assignedDepartments[i]} as a secondary responsible department`,
+          'info',
+          'medium',
+          req.user.id,
+          assignedDepartments[i],
+          'complaint',
+          problem.id,
+          true
+        ]);
+      }
+    }
+
     res.json({ 
       message: 'Problem created successfully', 
-      problem: problem
+      problem: {
+        ...problem,
+        assigned_departments: assignedDepartments,
+        primary_department: primaryDepartment
+      }
     });
   } catch (error) {
     console.error('Create problem error:', error);
@@ -602,7 +607,7 @@ app.get('/api/problems/user/:user_id', authenticateToken, async (req, res) => {
   }
 });
 
-// Get All Problems (Admin)
+// Get All Problems (Admin) - UPDATED with better department filtering
 app.get('/api/admin/problems', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head', 'field-worker'].includes(req.user.role)) {
@@ -622,18 +627,7 @@ app.get('/api/admin/problems', authenticateToken, async (req, res) => {
 
     // Filter by department for department heads
     if (req.user.role === 'department-head') {
-      const categoryMapping = {
-        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
-        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
-        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
-        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
-      };
-      const categories = categoryMapping[req.user.department] || [req.user.department];
-      // Use string matching to check categories  
-      query += ` WHERE (p.assigned_department = $1 OR 
-        p.problem_categories::text LIKE '%Garbage%' OR 
-        p.problem_categories::text LIKE '%सफाई%' OR
-        p.problem_categories::text LIKE '%Waste%')`;
+      query += ` WHERE p.assigned_department = $1`;
       queryParams.push(req.user.department);
     }
 
@@ -1134,10 +1128,9 @@ app.patch('/api/notifications/:notification_id/read', authenticateToken, async (
   }
 });
 
+// ==================== ANALYTICS ROUTES ====================
 
-// ==================== ANALYTICS ROUTES (ENHANCED) ====================
-
-// Get Dashboard Analytics (Enhanced with better error handling)
+// Get Dashboard Analytics
 app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1148,23 +1141,10 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      // For department heads, show problems assigned to their department OR problems in their category
-      const categoryMapping = {
-        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
-        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
-        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
-        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
-      };
-      const categories = categoryMapping[req.user.department] || [req.user.department];
-      // Use string matching to check categories
-      departmentFilter = `WHERE (p.assigned_department = $1 OR 
-        p.problem_categories::text LIKE '%Garbage%' OR 
-        p.problem_categories::text LIKE '%सफाई%' OR
-        p.problem_categories::text LIKE '%Waste%')`;
+      departmentFilter = `WHERE p.assigned_department = $1`;
       queryParams.push(req.user.department);
     }
 
-    // Get basic statistics with better error handling
     const statsQuery = `
       SELECT 
         COUNT(*) as total_complaints,
@@ -1179,7 +1159,6 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     const statsResult = await client.query(statsQuery, queryParams);
     const stats = statsResult.rows[0];
 
-    // Get category breakdown with safe handling
     const categoryQuery = `
       SELECT 
         unnest(problem_categories) as category,
@@ -1192,7 +1171,6 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const categoryResult = await client.query(categoryQuery, queryParams);
 
-    // Get recent complaints with safe data handling
     const recentQuery = `
       SELECT p.*, u.name as user_name
       FROM problems p
@@ -1204,7 +1182,6 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const recentResult = await client.query(recentQuery, queryParams);
 
-    // Build category breakdown object safely
     const categoryBreakdown = {};
     categoryResult.rows.forEach(row => {
       if (row.category && row.count) {
@@ -1228,7 +1205,6 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to get analytics', 
       details: error.message,
-      // Return minimal fallback data
       totalComplaints: 0,
       pendingComplaints: 0,
       inProgressComplaints: 0,
@@ -1240,7 +1216,7 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
   }
 });
 
-// Get Department Performance Analytics (Enhanced)
+// Get Department Performance Analytics
 app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'district-magistrate') {
@@ -1263,7 +1239,6 @@ app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
       ORDER BY resolved_complaints DESC
     `);
 
-    // Ensure all numeric values are properly formatted
     const departments = result.rows.map(dept => ({
       ...dept,
       total_complaints: parseInt(dept.total_complaints) || 0,
@@ -1280,12 +1255,12 @@ app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to get department analytics', 
       details: error.message,
-      departments: [] // Return empty array as fallback
+      departments: []
     });
   }
 });
 
-// Get Worker Performance Analytics (Enhanced)
+// Get Worker Performance Analytics
 app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1318,7 +1293,6 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
 
     const result = await client.query(query, queryParams);
 
-    // Ensure all numeric values are properly formatted
     const workers = result.rows.map(worker => ({
       ...worker,
       total_assigned: parseInt(worker.total_assigned) || 0,
@@ -1334,12 +1308,12 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to get worker analytics', 
       details: error.message,
-      workers: [] // Return empty array as fallback
+      workers: []
     });
   }
 });
 
-// Get Ward-wise Analytics (Enhanced)
+// Get Ward-wise Analytics
 app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1350,19 +1324,10 @@ app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      // For department heads, filter by their department
-      const categoryMapping = {
-        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
-        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
-        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
-        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
-      };
-      const categories = categoryMapping[req.user.department] || [req.user.department];
-      departmentFilter = 'WHERE (assigned_department = $1 OR problem_categories && $2)';
-      queryParams.push(req.user.department, categories);
+      departmentFilter = 'WHERE assigned_department = $1';
+      queryParams.push(req.user.department);
     }
 
-    // Ward data based on geographic location with department filtering
     const result = await client.query(`
       SELECT 
         CASE 
@@ -1388,10 +1353,9 @@ app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
       ORDER BY name
     `, queryParams);
 
-    // Ensure all numeric values are properly formatted
     const wards = result.rows.map(ward => ({
       ...ward,
-      name_en: ward.name, // Add English name
+      name_en: ward.name,
       total_complaints: parseInt(ward.total_complaints) || 0,
       resolved_complaints: parseInt(ward.resolved_complaints) || 0,
       pending_complaints: parseInt(ward.pending_complaints) || 0,
@@ -1404,12 +1368,12 @@ app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to get ward analytics', 
       details: error.message,
-      wards: [] // Return empty array as fallback
+      wards: []
     });
   }
 });
 
-// Get Real-time Activity Data (Enhanced)
+// Get Real-time Activity Data
 app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1420,19 +1384,7 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      // For department heads, filter by their department
-      const categoryMapping = {
-        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
-        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
-        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
-        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
-      };
-      const categories = categoryMapping[req.user.department] || [req.user.department];
-      // Use string matching to check categories
-      departmentFilter = `WHERE DATE(created_at) = CURRENT_DATE AND (assigned_department = $1 OR 
-        problem_categories::text LIKE '%Garbage%' OR 
-        problem_categories::text LIKE '%सफाई%' OR
-        problem_categories::text LIKE '%Waste%')`;
+      departmentFilter = `WHERE DATE(created_at) = CURRENT_DATE AND assigned_department = $1`;
       queryParams.push(req.user.department);
     }
 
@@ -1447,7 +1399,6 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
       ORDER BY hour
     `, queryParams);
 
-    // Fill in missing hours with 0 values
     const activityData = [];
     for (let hour = 0; hour < 24; hour++) {
       const hourData = result.rows.find(row => parseInt(row.hour) === hour);
@@ -1464,12 +1415,12 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to get activity analytics', 
       details: error.message,
-      activity: [] // Return empty array as fallback
+      activity: []
     });
   }
 });
 
-// Get Recent Activity Feed (Enhanced)
+// Get Recent Activity Feed
 app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1482,19 +1433,7 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
     let queryParams = [parseInt(limit.toString())];
     
     if (req.user.role === 'department-head') {
-      // For department heads, filter by their department
-      const categoryMapping = {
-        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
-        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
-        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
-        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
-      };
-      const categories = categoryMapping[req.user.department] || [req.user.department];
-      // Use string matching to check categories
-      departmentFilter = `WHERE (p.assigned_department = $2 OR 
-        p.problem_categories::text LIKE '%Garbage%' OR 
-        p.problem_categories::text LIKE '%सफाई%' OR
-        p.problem_categories::text LIKE '%Waste%')`;
+      departmentFilter = `WHERE p.assigned_department = $2`;
       queryParams.push(req.user.department);
     }
 
@@ -1530,26 +1469,168 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
     res.status(500).json({ 
       error: 'Failed to get recent activity', 
       details: error.message,
-      activities: [] // Return empty array as fallback
+      activities: []
     });
   }
 });
 
-// ==================== HEALTH CHECK ROUTE ====================
-
+// Health check route
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// ==================== ERROR HANDLING MIDDLEWARE ====================
-
+// Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ==================== SERVER INITIALIZATION ====================
+// Initialize database tables
+async function initializeDatabase() {
+  try {
+    // Users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        phone_number VARCHAR(20) UNIQUE NOT NULL,
+        aadhar VARCHAR(12) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        address TEXT,
+        role VARCHAR(50) DEFAULT 'citizen',
+        department VARCHAR(255),
+        avatar_url TEXT,
+        is_active BOOLEAN DEFAULT true,
+        last_login TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
+    // Problems table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS problems (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        problem_categories TEXT[] NOT NULL,
+        others_text TEXT,
+        user_image_base64 TEXT NOT NULL,
+        user_image_mimetype VARCHAR(100) NOT NULL,
+        admin_image_base64 TEXT,
+        admin_image_mimetype VARCHAR(100),
+        latitude DECIMAL(10, 8) NOT NULL,
+        longitude DECIMAL(11, 8) NOT NULL,
+        status VARCHAR(50) DEFAULT 'not completed',
+        priority VARCHAR(20) DEFAULT 'medium',
+        assigned_worker_id INTEGER REFERENCES users(id),
+        assigned_department VARCHAR(255),
+        estimated_completion DATE,
+        completion_notes TEXT,
+        citizen_rating INTEGER CHECK (citizen_rating >= 1 AND citizen_rating <= 5),
+        citizen_feedback TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Workers table (extended user information for field workers)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workers (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) UNIQUE,
+        specializations TEXT[],
+        efficiency_rating DECIMAL(3, 2) DEFAULT 0.0,
+        total_assigned INTEGER DEFAULT 0,
+        total_completed INTEGER DEFAULT 0,
+        avg_completion_time DECIMAL(5, 2), -- in hours
+        current_status VARCHAR(50) DEFAULT 'available',
+        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        location_lat DECIMAL(10, 8),
+        location_lng DECIMAL(11, 8),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Departments table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS departments (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        name_en VARCHAR(255) NOT NULL,
+        head_id INTEGER REFERENCES users(id),
+        description TEXT,
+        phone VARCHAR(20),
+        email VARCHAR(255),
+        location TEXT,
+        budget DECIMAL(15, 2),
+        established_year INTEGER,
+        status VARCHAR(50) DEFAULT 'active',
+        total_workers INTEGER DEFAULT 0,
+        total_complaints INTEGER DEFAULT 0,
+        resolved_complaints INTEGER DEFAULT 0,
+        avg_resolution_time DECIMAL(5, 2), -- in days
+        rating DECIMAL(3, 2) DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Notifications table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(50) NOT NULL, -- urgent, info, success, warning
+        priority VARCHAR(20) DEFAULT 'medium', -- high, medium, low
+        sender_id INTEGER REFERENCES users(id),
+        recipient_ids INTEGER[],
+        department VARCHAR(255),
+        category VARCHAR(50) NOT NULL, -- system, complaint, worker, citizen, department, emergency
+        related_problem_id INTEGER REFERENCES problems(id),
+        action_required BOOLEAN DEFAULT false,
+        expires_at TIMESTAMP,
+        is_read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Problem status history table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS problem_status_history (
+        id SERIAL PRIMARY KEY,
+        problem_id INTEGER REFERENCES problems(id),
+        status VARCHAR(50) NOT NULL,
+        updated_by_id INTEGER REFERENCES users(id),
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Analytics table for storing computed metrics
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS analytics (
+        id SERIAL PRIMARY KEY,
+        metric_name VARCHAR(100) NOT NULL,
+        metric_value DECIMAL(15, 2),
+        metric_data JSONB,
+        department VARCHAR(255),
+        date_range_start DATE,
+        date_range_end DATE,
+        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('All database tables initialized successfully');
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    throw error;
+  }
+}
+
+// Server initialization
 async function startServer() {
   try {
     await connectDatabase();
@@ -1566,7 +1647,7 @@ async function startServer() {
       console.log('    GET /api/users - Get all users (admin)');
       console.log('  🚨 Problem Management:');
       console.log('    POST /api/analyze-image - AI image analysis');
-      console.log('    POST /api/problems - Submit problem');
+      console.log('    POST /api/problems - Submit problem (with auto department assignment)');
       console.log('    GET /api/problems/user/:user_id - Get user problems');
       console.log('    GET /api/admin/problems - Get all problems (admin)');
       console.log('    POST /api/admin/problems/:id/complete - Mark completed');
@@ -1585,7 +1666,7 @@ async function startServer() {
       console.log('    GET /api/notifications - Get notifications');
       console.log('    POST /api/notifications - Create notification');
       console.log('    PATCH /api/notifications/:id/read - Mark as read');
-      console.log('  📊 Analytics (Enhanced):');
+      console.log('  📊 Analytics:');
       console.log('    GET /api/analytics/dashboard - Dashboard analytics');
       console.log('    GET /api/analytics/departments - Department performance');
       console.log('    GET /api/analytics/workers - Worker performance');
@@ -1609,3 +1690,5 @@ process.on('SIGINT', async () => {
 });
 
 startServer();
+
+module.exports = { client, assignDepartmentsToProblem, updateExistingProblemsWithDepartments };

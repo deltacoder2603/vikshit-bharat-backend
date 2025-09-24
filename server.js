@@ -459,18 +459,31 @@ app.post('/api/analyze-image', upload.single('image'), async (req, res) => {
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     
-    const prompt = `You are analyzing civic issue images. Identify if the photo shows any of the following problems:
-• Garbage & Waste (roadside dumps, no dustbins, poor segregation)
-• Traffic & Roads (encroachments, potholes, heavy congestion)
-• Pollution (dirty Ganga, factory emissions, open garbage burning)
-• Drainage & Sewage (open drains, choked sewers, waterlogging)
-• Public Spaces (poor toilets, park encroachment, less greenery)
-• Housing & Slums (unplanned colonies, lack of sanitation & housing)
-• Other Issues (broken streetlights, stray animals, no parking)
+    const prompt = `Analyze this image for civic issues in Indian cities. 
 
-Return your answer ONLY as a JSON array of category names that apply, exactly matching the wording above.
-If no categories apply, return [].
-Be specific: include only the categories clearly visible in the photo, not all of them.`;
+Look for these specific problems:
+1. Garbage & Waste - roadside dumps, overflowing bins, waste scattered around
+2. Traffic & Roads - potholes, broken roads, traffic congestion, illegal parking
+3. Pollution - dirty water bodies, smoke/emissions, burning waste
+4. Drainage & Sewage - open drains, waterlogging, blocked sewers
+5. Public Spaces - damaged public property, poor maintenance, encroachment
+6. Housing & Slums - poor living conditions, lack of basic amenities
+7. Infrastructure - broken streetlights, damaged signs, poor connectivity
+8. Other Issues - stray animals, safety hazards, environmental problems
+
+IMPORTANT: 
+- Only return categories that are clearly visible in the image
+- Be specific and accurate
+- If no civic issues are found, return empty array
+- Return ONLY a JSON array of category names
+
+Examples of correct responses:
+["Garbage & Waste", "Traffic & Roads"]
+["Pollution"]
+[]
+["Drainage & Sewage", "Public Spaces"]
+
+Return your response as a JSON array only.`;
 
     const imagePart = {
       inlineData: {

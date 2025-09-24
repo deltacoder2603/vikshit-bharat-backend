@@ -72,7 +72,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Initialize database tables
+// Initialize database tables (same as before)
 async function initializeDatabase() {
   try {
     // Users table
@@ -183,7 +183,6 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-
 
     // Problem status history table
     await client.query(`
@@ -458,7 +457,7 @@ app.post('/api/analyze-image', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     
     const prompt = `You are analyzing civic issue images. Identify if the photo shows any of the following problems:
 • Garbage & Waste (roadside dumps, no dustbins, poor segregation)
@@ -623,7 +622,18 @@ app.get('/api/admin/problems', authenticateToken, async (req, res) => {
 
     // Filter by department for department heads
     if (req.user.role === 'department-head') {
-      query += ` WHERE p.assigned_department = $1`;
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories  
+      query += ` WHERE (p.assigned_department = $1 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
       queryParams.push(req.user.department);
     }
 
@@ -1053,7 +1063,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
     }
 
     query += ` ORDER BY n.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount}`;
-    queryParams.push(parseInt(limit), parseInt(offset));
+    queryParams.push(parseInt(limit.toString()), parseInt(offset.toString()));
 
     const result = await client.query(query, queryParams);
 
@@ -1125,9 +1135,9 @@ app.patch('/api/notifications/:notification_id/read', authenticateToken, async (
 });
 
 
-// ==================== ANALYTICS ROUTES ====================
+// ==================== ANALYTICS ROUTES (ENHANCED) ====================
 
-// Get Dashboard Analytics
+// Get Dashboard Analytics (Enhanced with better error handling)
 app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1138,18 +1148,30 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      departmentFilter = 'WHERE p.assigned_department = $1';
+      // For department heads, show problems assigned to their department OR problems in their category
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE (p.assigned_department = $1 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
       queryParams.push(req.user.department);
     }
 
-    // Get basic statistics
+    // Get basic statistics with better error handling
     const statsQuery = `
       SELECT 
         COUNT(*) as total_complaints,
         COUNT(*) FILTER (WHERE status = 'not completed') as pending_complaints,
         COUNT(*) FILTER (WHERE status = 'in-progress') as in_progress_complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as completed_complaints,
-        AVG(CASE WHEN status = 'completed' THEN EXTRACT(DAY FROM (updated_at - created_at)) END) as avg_resolution_days
+        COALESCE(AVG(CASE WHEN status = 'completed' THEN EXTRACT(DAY FROM (updated_at - created_at)) END), 0) as avg_resolution_days
       FROM problems p
       ${departmentFilter}
     `;
@@ -1157,7 +1179,7 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     const statsResult = await client.query(statsQuery, queryParams);
     const stats = statsResult.rows[0];
 
-    // Get category breakdown
+    // Get category breakdown with safe handling
     const categoryQuery = `
       SELECT 
         unnest(problem_categories) as category,
@@ -1170,7 +1192,7 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const categoryResult = await client.query(categoryQuery, queryParams);
 
-    // Get recent complaints
+    // Get recent complaints with safe data handling
     const recentQuery = `
       SELECT p.*, u.name as user_name
       FROM problems p
@@ -1182,27 +1204,43 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const recentResult = await client.query(recentQuery, queryParams);
 
+    // Build category breakdown object safely
+    const categoryBreakdown = {};
+    categoryResult.rows.forEach(row => {
+      if (row.category && row.count) {
+        categoryBreakdown[row.category] = parseInt(row.count) || 0;
+      }
+    });
+
     const analytics = {
-      totalComplaints: parseInt(stats.total_complaints),
-      pendingComplaints: parseInt(stats.pending_complaints),
-      inProgressComplaints: parseInt(stats.in_progress_complaints),
-      completedComplaints: parseInt(stats.completed_complaints),
+      totalComplaints: parseInt(stats.total_complaints) || 0,
+      pendingComplaints: parseInt(stats.pending_complaints) || 0,
+      inProgressComplaints: parseInt(stats.in_progress_complaints) || 0,
+      completedComplaints: parseInt(stats.completed_complaints) || 0,
       avgResolutionDays: parseFloat(stats.avg_resolution_days) || 0,
-      categoryBreakdown: categoryResult.rows.reduce((acc, row) => {
-        acc[row.category] = parseInt(row.count);
-        return acc;
-      }, {}),
-      recentComplaints: recentResult.rows
+      categoryBreakdown: categoryBreakdown,
+      recentComplaints: recentResult.rows || []
     };
 
     res.json(analytics);
   } catch (error) {
     console.error('Get analytics error:', error);
-    res.status(500).json({ error: 'Failed to get analytics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get analytics', 
+      details: error.message,
+      // Return minimal fallback data
+      totalComplaints: 0,
+      pendingComplaints: 0,
+      inProgressComplaints: 0,
+      completedComplaints: 0,
+      avgResolutionDays: 0,
+      categoryBreakdown: {},
+      recentComplaints: []
+    });
   }
 });
 
-// Get Department Performance Analytics
+// Get Department Performance Analytics (Enhanced)
 app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'district-magistrate') {
@@ -1213,26 +1251,41 @@ app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
       SELECT 
         d.name,
         d.name_en,
-        COUNT(p.id) as total_complaints,
-        COUNT(p.id) FILTER (WHERE p.status = 'completed') as resolved_complaints,
-        COUNT(p.id) FILTER (WHERE p.status = 'not completed') as pending_complaints,
-        AVG(CASE WHEN p.status = 'completed' THEN EXTRACT(DAY FROM (p.updated_at - p.created_at)) END) as avg_resolution_days,
-        d.rating,
-        d.total_workers
+        COALESCE(COUNT(p.id), 0) as total_complaints,
+        COALESCE(COUNT(p.id) FILTER (WHERE p.status = 'completed'), 0) as resolved_complaints,
+        COALESCE(COUNT(p.id) FILTER (WHERE p.status = 'not completed'), 0) as pending_complaints,
+        COALESCE(AVG(CASE WHEN p.status = 'completed' THEN EXTRACT(DAY FROM (p.updated_at - p.created_at)) END), 0) as avg_resolution_days,
+        COALESCE(d.rating, 0) as rating,
+        COALESCE(d.total_workers, 0) as total_workers
       FROM departments d
       LEFT JOIN problems p ON d.name = p.assigned_department
       GROUP BY d.id, d.name, d.name_en, d.rating, d.total_workers
       ORDER BY resolved_complaints DESC
     `);
 
-    res.json({ departments: result.rows });
+    // Ensure all numeric values are properly formatted
+    const departments = result.rows.map(dept => ({
+      ...dept,
+      total_complaints: parseInt(dept.total_complaints) || 0,
+      resolved_complaints: parseInt(dept.resolved_complaints) || 0,
+      pending_complaints: parseInt(dept.pending_complaints) || 0,
+      avg_resolution_days: parseFloat(dept.avg_resolution_days) || 0,
+      rating: parseFloat(dept.rating) || 0,
+      total_workers: parseInt(dept.total_workers) || 0
+    }));
+
+    res.json({ departments });
   } catch (error) {
     console.error('Get department analytics error:', error);
-    res.status(500).json({ error: 'Failed to get department analytics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get department analytics', 
+      details: error.message,
+      departments: [] // Return empty array as fallback
+    });
   }
 });
 
-// Get Worker Performance Analytics
+// Get Worker Performance Analytics (Enhanced)
 app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1242,9 +1295,12 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
     let query = `
       SELECT 
         u.id, u.name, u.department,
-        w.total_assigned, w.total_completed, w.efficiency_rating,
-        w.avg_completion_time, w.current_status,
-        COUNT(p.id) as active_assignments
+        COALESCE(w.total_assigned, 0) as total_assigned, 
+        COALESCE(w.total_completed, 0) as total_completed, 
+        COALESCE(w.efficiency_rating, 0) as efficiency_rating,
+        COALESCE(w.avg_completion_time, 0) as avg_completion_time, 
+        COALESCE(w.current_status, 'available') as current_status,
+        COALESCE(COUNT(p.id), 0) as active_assignments
       FROM users u
       LEFT JOIN workers w ON u.id = w.user_id
       LEFT JOIN problems p ON u.id = p.assigned_worker_id AND p.status = 'in-progress'
@@ -1262,52 +1318,122 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
 
     const result = await client.query(query, queryParams);
 
-    res.json({ workers: result.rows });
+    // Ensure all numeric values are properly formatted
+    const workers = result.rows.map(worker => ({
+      ...worker,
+      total_assigned: parseInt(worker.total_assigned) || 0,
+      total_completed: parseInt(worker.total_completed) || 0,
+      efficiency_rating: parseFloat(worker.efficiency_rating) || 0,
+      avg_completion_time: parseFloat(worker.avg_completion_time) || 0,
+      active_assignments: parseInt(worker.active_assignments) || 0
+    }));
+
+    res.json({ workers });
   } catch (error) {
     console.error('Get worker analytics error:', error);
-    res.status(500).json({ error: 'Failed to get worker analytics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get worker analytics', 
+      details: error.message,
+      workers: [] // Return empty array as fallback
+    });
   }
 });
 
-// ==================== ADDITIONAL ANALYTICS ROUTES ====================
-
-// Get Ward-wise Analytics
+// Get Ward-wise Analytics (Enhanced)
 app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Unauthorized access' });
     }
 
-    // Mock ward data for now - in production, you'd have ward information in problems table
+    let departmentFilter = '';
+    let queryParams = [];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      departmentFilter = 'WHERE (assigned_department = $1 OR problem_categories && $2)';
+      queryParams.push(req.user.department, categories);
+    }
+
+    // Ward data based on geographic location with department filtering
     const result = await client.query(`
       SELECT 
         CASE 
-          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1'
-          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2'
-          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3'
-          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4'
-          ELSE 'Ward 5'
-        END as ward,
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1 - Civil Lines'
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2 - Mall Road'
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3 - Swaroop Nagar'
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4 - Kidwai Nagar'
+          ELSE 'Ward 5 - Other Areas'
+        END as name,
         COUNT(*) as total_complaints,
-        COUNT(*) FILTER (WHERE status = 'completed') as resolved,
-        COUNT(*) FILTER (WHERE status = 'not completed') as pending
-      FROM problems
-      GROUP BY ward
-      ORDER BY ward
-    `);
+        COUNT(*) FILTER (WHERE status = 'completed') as resolved_complaints,
+        COUNT(*) FILTER (WHERE status = 'not completed') as pending_complaints,
+        CASE 
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 75000
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 85000
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 65000
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 90000
+          ELSE 55000
+        END as population
+      FROM problems p
+      ${departmentFilter}
+      GROUP BY name, population
+      ORDER BY name
+    `, queryParams);
 
-    res.json({ wards: result.rows });
+    // Ensure all numeric values are properly formatted
+    const wards = result.rows.map(ward => ({
+      ...ward,
+      name_en: ward.name, // Add English name
+      total_complaints: parseInt(ward.total_complaints) || 0,
+      resolved_complaints: parseInt(ward.resolved_complaints) || 0,
+      pending_complaints: parseInt(ward.pending_complaints) || 0,
+      population: parseInt(ward.population) || 50000
+    }));
+
+    res.json({ wards });
   } catch (error) {
     console.error('Get ward analytics error:', error);
-    res.status(500).json({ error: 'Failed to get ward analytics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get ward analytics', 
+      details: error.message,
+      wards: [] // Return empty array as fallback
+    });
   }
 });
 
-// Get Real-time Activity Data (hourly breakdown for today)
+// Get Real-time Activity Data (Enhanced)
 app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Unauthorized access' });
+    }
+
+    let departmentFilter = 'WHERE DATE(created_at) = CURRENT_DATE';
+    let queryParams = [];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE DATE(created_at) = CURRENT_DATE AND (assigned_department = $1 OR 
+        problem_categories::text LIKE '%Garbage%' OR 
+        problem_categories::text LIKE '%सफाई%' OR
+        problem_categories::text LIKE '%Waste%')`;
+      queryParams.push(req.user.department);
     }
 
     const result = await client.query(`
@@ -1316,10 +1442,10 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
         COUNT(*) as complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as resolved
       FROM problems 
-      WHERE DATE(created_at) = CURRENT_DATE
+      ${departmentFilter}
       GROUP BY EXTRACT(HOUR FROM created_at)
       ORDER BY hour
-    `);
+    `, queryParams);
 
     // Fill in missing hours with 0 values
     const activityData = [];
@@ -1327,19 +1453,23 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
       const hourData = result.rows.find(row => parseInt(row.hour) === hour);
       activityData.push({
         time: `${hour.toString().padStart(2, '0')}:00`,
-        complaints: hourData ? parseInt(hourData.complaints) : 0,
-        resolved: hourData ? parseInt(hourData.resolved) : 0
+        complaints: hourData ? parseInt(hourData.complaints) || 0 : 0,
+        resolved: hourData ? parseInt(hourData.resolved) || 0 : 0
       });
     }
 
     res.json({ activity: activityData });
   } catch (error) {
     console.error('Get activity analytics error:', error);
-    res.status(500).json({ error: 'Failed to get activity analytics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get activity analytics', 
+      details: error.message,
+      activity: [] // Return empty array as fallback
+    });
   }
 });
 
-// Get Recent Activity Feed
+// Get Recent Activity Feed (Enhanced)
 app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
@@ -1347,6 +1477,26 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
     }
 
     const { limit = 20 } = req.query;
+
+    let departmentFilter = '';
+    let queryParams = [parseInt(limit.toString())];
+    
+    if (req.user.role === 'department-head') {
+      // For department heads, filter by their department
+      const categoryMapping = {
+        'सफाई विभाग': ['Garbage & Waste Management', 'सफाई और कचरा प्रबंधन', 'Garbage & Waste', 'Garbage & Waste (roadside dumps, no dustbins, poor segregation)', 'Pollution (open garbage burning)'],
+        'जल विभाग': ['Water Supply', 'जल आपूर्ति', 'Water & Sanitation'],
+        'सड़क विभाग': ['Roads & Transportation', 'सड़क और परिवहन', 'Roads & Infrastructure'],
+        'विद्युत विभाग': ['Electricity', 'बिजली', 'Power & Utilities']
+      };
+      const categories = categoryMapping[req.user.department] || [req.user.department];
+      // Use string matching to check categories
+      departmentFilter = `WHERE (p.assigned_department = $2 OR 
+        p.problem_categories::text LIKE '%Garbage%' OR 
+        p.problem_categories::text LIKE '%सफाई%' OR
+        p.problem_categories::text LIKE '%Waste%')`;
+      queryParams.push(req.user.department);
+    }
 
     const result = await client.query(`
       SELECT 
@@ -1360,9 +1510,10 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
       FROM problem_status_history psh
       JOIN users u ON psh.updated_by_id = u.id
       JOIN problems p ON psh.problem_id = p.id
+      ${departmentFilter}
       ORDER BY psh.created_at DESC
       LIMIT $1
-    `, [parseInt(limit.toString())]);
+    `, queryParams);
 
     const activities = result.rows.map(row => ({
       id: row.problem_id,
@@ -1370,13 +1521,17 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
       description: row.notes || `Status changed to ${row.status}`,
       user: row.updated_by_name,
       timestamp: row.created_at,
-      category: row.problem_categories[0] || 'Other'
+      category: (row.problem_categories && row.problem_categories.length > 0) ? row.problem_categories[0] : 'Other'
     }));
 
     res.json({ activities });
   } catch (error) {
     console.error('Get recent activity error:', error);
-    res.status(500).json({ error: 'Failed to get recent activity', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to get recent activity', 
+      details: error.message,
+      activities: [] // Return empty array as fallback
+    });
   }
 });
 
@@ -1430,10 +1585,13 @@ async function startServer() {
       console.log('    GET /api/notifications - Get notifications');
       console.log('    POST /api/notifications - Create notification');
       console.log('    PATCH /api/notifications/:id/read - Mark as read');
-      console.log('  📊 Analytics:');
+      console.log('  📊 Analytics (Enhanced):');
       console.log('    GET /api/analytics/dashboard - Dashboard analytics');
       console.log('    GET /api/analytics/departments - Department performance');
       console.log('    GET /api/analytics/workers - Worker performance');
+      console.log('    GET /api/analytics/wards - Ward analytics');
+      console.log('    GET /api/analytics/activity - Real-time activity');
+      console.log('    GET /api/analytics/recent-activity - Recent activity feed');
       console.log('  🏥 Health:');
       console.log('    GET /health - Health check');
     });

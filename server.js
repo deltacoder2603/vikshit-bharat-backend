@@ -18,7 +18,7 @@ const corsOptions = {
 };
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
@@ -33,11 +33,11 @@ const upload = multer({
 });
 
 // Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'AIzaSyADv0-3bQ_72nKlxQwzOI9UvXhu7_sn9Go');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Neon PostgreSQL client
 const client = new Client({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_nR3aPSIK5gZQ@ep-misty-rice-adw2676l-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require',
+  connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
   }
@@ -63,7 +63,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'vikshit-bharat-secret-key-2024', (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'default_secret', (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -72,116 +72,148 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Department assignment mapping based on problem categories
-const DEPARTMENT_ASSIGNMENT_MAP = {
-  // Garbage & Waste Management
-  'Garbage & Waste': 'सफाई विभाग',
-  'Garbage & Waste (roadside dumps, no dustbins, poor segregation)': 'सफाई विभाग',
-  'Garbage & Waste Management': 'सफाई विभाग',
-  'सफाई और कचरा प्रबंधन': 'सफाई विभाग',
-  'Pollution (open garbage burning)': 'सफाई विभाग',
-  
-  // Water & Sanitation
-  'Water Issues': 'जल विभाग',
-  'Water Supply': 'जल विभाग',
-  'जल आपूर्ति': 'जल विभाग',
-  'Water & Sanitation': 'जल विभाग',
-  'Drainage & Sewage': 'जल विभाग',
-  'Drainage & Sewage (open drains, choked sewers, waterlogging)': 'जल विभाग',
-  
-  // Roads & Transportation
-  'Traffic & Roads': 'सड़क विभाग',
-  'Traffic & Roads (encroachments, potholes, heavy congestion)': 'सड़क विभाग',
-  'Roads & Transportation': 'सड़क और परिवहन',
-  'सड़क और परिवहन': 'सड़क विभाग',
-  'Roads & Infrastructure': 'सड़क विभाग',
-  
-  // Electricity & Power
-  'Electricity Issues': 'विद्युत विभाग',
-  'Electricity': 'विद्युत विभाग',
-  'बिजली': 'विद्युत विभाग',
-  'Power & Utilities': 'विद्युत विभाग',
-  
-  // Public Spaces & Environment
-  'Public Spaces': 'सफाई विभाग',
-  'Public Spaces (poor toilets, park encroachment, less greenery)': 'सफाई विभाग',
-  'Pollution': 'सफाई विभाग',
-  'Pollution (dirty Ganga, factory emissions, open garbage burning)': 'सफाई विभाग',
-  
-  // Housing & Urban Development
-  'Housing & Slums': 'नगर विकास विभाग',
-  'Housing & Slums (unplanned colonies, lack of sanitation & housing)': 'नगर विकास विभाग',
-  
-  // Education
-  'Education': 'शिक्षा विभाग',
-  
-  // Health
-  'Health': 'स्वास्थ्य विभाग',
-  
-  // Other Issues
-  'Other Issues': 'सामान्य प्रशासन',
-  'Other Issues (broken streetlights, stray animals, no parking)': 'सामान्य प्रशासन'
-};
-
-// Function to automatically assign departments based on problem categories
-function assignDepartmentsToProblem(problemCategories) {
-  const assignedDepartments = new Set();
-  
-  // Check each category and assign to appropriate departments
-  problemCategories.forEach(category => {
-    const department = DEPARTMENT_ASSIGNMENT_MAP[category];
-    if (department) {
-      assignedDepartments.add(department);
-    }
-  });
-  
-  // If no specific department found, assign to general administration
-  if (assignedDepartments.size === 0) {
-    assignedDepartments.add('सामान्य प्रशासन');
-  }
-  
-  return Array.from(assignedDepartments);
-}
-
-// Function to update existing problems with department assignments
-async function updateExistingProblemsWithDepartments() {
+// Initialize database tables
+async function initializeDatabase() {
   try {
-    console.log('🔄 Updating existing problems with department assignments...');
-    
-    // Get all problems without department assignments
-    const result = await client.query(`
-      SELECT id, problem_categories 
-      FROM problems 
-      WHERE assigned_department IS NULL OR assigned_department = ''
+    // Users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        phone_number VARCHAR(20) UNIQUE NOT NULL,
+        aadhar VARCHAR(12) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        address TEXT,
+        role VARCHAR(50) DEFAULT 'citizen',
+        department VARCHAR(255),
+        avatar_url TEXT,
+        is_active BOOLEAN DEFAULT true,
+        last_login TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
     `);
-    
-    let updatedCount = 0;
-    
-    for (const problem of result.rows) {
-      const assignedDepartments = assignDepartmentsToProblem(problem.problem_categories);
-      
-      // Update the problem with the first assigned department (primary assignment)
-      const primaryDepartment = assignedDepartments[0];
-      
-      await client.query(`
-        UPDATE problems 
-        SET assigned_department = $1, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
-      `, [primaryDepartment, problem.id]);
-      
-      // Add status history for the assignment
-      await client.query(`
-        INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
-        VALUES ($1, $2, $3, $4)
-      `, [problem.id, 'assigned', 1, `Automatically assigned to ${primaryDepartment}`]);
-      
-      updatedCount++;
-    }
-    
-    console.log(`✅ Updated ${updatedCount} problems with department assignments`);
-    return updatedCount;
+
+    // Problems table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS problems (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        problem_categories TEXT[] NOT NULL,
+        others_text TEXT,
+        user_image_base64 TEXT NOT NULL,
+        user_image_mimetype VARCHAR(100) NOT NULL,
+        admin_image_base64 TEXT,
+        admin_image_mimetype VARCHAR(100),
+        latitude DECIMAL(10, 8) NOT NULL,
+        longitude DECIMAL(11, 8) NOT NULL,
+        status VARCHAR(50) DEFAULT 'not completed',
+        priority VARCHAR(20) DEFAULT 'medium',
+        assigned_worker_id INTEGER REFERENCES users(id),
+        assigned_department VARCHAR(255),
+        estimated_completion DATE,
+        completion_notes TEXT,
+        citizen_rating INTEGER CHECK (citizen_rating >= 1 AND citizen_rating <= 5),
+        citizen_feedback TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Workers table (extended user information for field workers)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workers (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) UNIQUE,
+        specializations TEXT[],
+        efficiency_rating DECIMAL(3, 2) DEFAULT 0.0,
+        total_assigned INTEGER DEFAULT 0,
+        total_completed INTEGER DEFAULT 0,
+        avg_completion_time DECIMAL(5, 2), -- in hours
+        current_status VARCHAR(50) DEFAULT 'available',
+        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        location_lat DECIMAL(10, 8),
+        location_lng DECIMAL(11, 8),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Departments table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS departments (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        name_en VARCHAR(255) NOT NULL,
+        head_id INTEGER REFERENCES users(id),
+        description TEXT,
+        phone VARCHAR(20),
+        email VARCHAR(255),
+        location TEXT,
+        budget DECIMAL(15, 2),
+        established_year INTEGER,
+        status VARCHAR(50) DEFAULT 'active',
+        total_workers INTEGER DEFAULT 0,
+        total_complaints INTEGER DEFAULT 0,
+        resolved_complaints INTEGER DEFAULT 0,
+        avg_resolution_time DECIMAL(5, 2), -- in days
+        rating DECIMAL(3, 2) DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Notifications table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(50) NOT NULL, -- urgent, info, success, warning
+        priority VARCHAR(20) DEFAULT 'medium', -- high, medium, low
+        sender_id INTEGER REFERENCES users(id),
+        recipient_ids INTEGER[],
+        department VARCHAR(255),
+        category VARCHAR(50) NOT NULL, -- system, complaint, worker, citizen, department, emergency
+        related_problem_id INTEGER REFERENCES problems(id),
+        action_required BOOLEAN DEFAULT false,
+        expires_at TIMESTAMP,
+        is_read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+
+    // Problem status history table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS problem_status_history (
+        id SERIAL PRIMARY KEY,
+        problem_id INTEGER REFERENCES problems(id),
+        status VARCHAR(50) NOT NULL,
+        updated_by_id INTEGER REFERENCES users(id),
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Analytics table for storing computed metrics
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS analytics (
+        id SERIAL PRIMARY KEY,
+        metric_name VARCHAR(100) NOT NULL,
+        metric_value DECIMAL(15, 2),
+        metric_data JSONB,
+        department VARCHAR(255),
+        date_range_start DATE,
+        date_range_end DATE,
+        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('All database tables initialized successfully');
   } catch (error) {
-    console.error('❌ Error updating existing problems:', error);
+    console.error('Database initialization error:', error);
     throw error;
   }
 }
@@ -200,8 +232,6 @@ function convertImageToBase64(fileBuffer, mimeType) {
   }
 }
 
-
-
 // Generate JWT token
 function generateToken(user) {
   return jwt.sign(
@@ -210,7 +240,7 @@ function generateToken(user) {
       email: user.email, 
       role: user.role 
     },
-    process.env.JWT_SECRET || 'vikshit-bharat-secret-key-2024',
+    process.env.JWT_SECRET || 'default_secret',
     { expiresIn: '7d' }
   );
 }
@@ -428,7 +458,7 @@ app.post('/api/analyze-image', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
     
     const prompt = `You are analyzing civic issue images. Identify if the photo shows any of the following problems:
 • Garbage & Waste (roadside dumps, no dustbins, poor segregation)
@@ -475,7 +505,7 @@ Be specific: include only the categories clearly visible in the photo, not all o
   }
 });
 
-// Submit Problem (UPDATED with automatic department assignment)
+// Submit Problem
 app.post('/api/problems', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     const { problem_categories, others_text, latitude, longitude, priority = 'medium' } = req.body;
@@ -517,16 +547,12 @@ app.post('/api/problems', authenticateToken, upload.single('image'), async (req,
     // Convert image to base64
     const imageData = convertImageToBase64(req.file.buffer, req.file.mimetype);
 
-    // Automatically assign departments based on problem categories
-    const assignedDepartments = assignDepartmentsToProblem(categoriesArray);
-    const primaryDepartment = assignedDepartments[0]; // Use first department as primary
-
     // Insert into database
     const result = await client.query(`
-      INSERT INTO problems (user_id, problem_categories, others_text, user_image_base64, user_image_mimetype, latitude, longitude, priority, status, assigned_department)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      INSERT INTO problems (user_id, problem_categories, others_text, user_image_base64, user_image_mimetype, latitude, longitude, priority, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
-    `, [req.user.id, categoriesArray, others_text || null, imageData.base64, imageData.mimeType, lat, lng, priority, 'not completed', primaryDepartment]);
+    `, [req.user.id, categoriesArray, others_text || null, imageData.base64, imageData.mimeType, lat, lng, priority, 'not completed']);
 
     const problem = result.rows[0];
 
@@ -536,39 +562,9 @@ app.post('/api/problems', authenticateToken, upload.single('image'), async (req,
       VALUES ($1, $2, $3, $4)
     `, [problem.id, 'not completed', req.user.id, 'Problem submitted']);
 
-    // Add assignment history
-    await client.query(`
-      INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
-      VALUES ($1, $2, $3, $4)
-    `, [problem.id, 'assigned', req.user.id, `Automatically assigned to ${primaryDepartment}`]);
-
-    // If multiple departments are responsible, create notifications for other departments
-    if (assignedDepartments.length > 1) {
-      for (let i = 1; i < assignedDepartments.length; i++) {
-        await client.query(`
-          INSERT INTO notifications (title, message, type, priority, sender_id, department, category, related_problem_id, action_required)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, [
-          `Multi-department Problem Assignment`,
-          `Problem #${problem.id} has been assigned to ${assignedDepartments[i]} as a secondary responsible department`,
-          'info',
-          'medium',
-          req.user.id,
-          assignedDepartments[i],
-          'complaint',
-          problem.id,
-          true
-        ]);
-      }
-    }
-
     res.json({ 
       message: 'Problem created successfully', 
-      problem: {
-        ...problem,
-        assigned_departments: assignedDepartments,
-        primary_department: primaryDepartment
-      }
+      problem: problem
     });
   } catch (error) {
     console.error('Create problem error:', error);
@@ -607,7 +603,7 @@ app.get('/api/problems/user/:user_id', authenticateToken, async (req, res) => {
   }
 });
 
-// Get All Problems (Admin) - UPDATED with better department filtering
+// Get All Problems (Admin)
 app.get('/api/admin/problems', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head', 'field-worker'].includes(req.user.role)) {
@@ -1057,7 +1053,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
     }
 
     query += ` ORDER BY n.created_at DESC LIMIT $${paramCount++} OFFSET $${paramCount}`;
-    queryParams.push(parseInt(limit.toString()), parseInt(offset.toString()));
+    queryParams.push(parseInt(limit), parseInt(offset));
 
     const result = await client.query(query, queryParams);
 
@@ -1128,6 +1124,7 @@ app.patch('/api/notifications/:notification_id/read', authenticateToken, async (
   }
 });
 
+
 // ==================== ANALYTICS ROUTES ====================
 
 // Get Dashboard Analytics
@@ -1141,17 +1138,18 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     let queryParams = [];
     
     if (req.user.role === 'department-head') {
-      departmentFilter = `WHERE p.assigned_department = $1`;
+      departmentFilter = 'WHERE p.assigned_department = $1';
       queryParams.push(req.user.department);
     }
 
+    // Get basic statistics
     const statsQuery = `
       SELECT 
         COUNT(*) as total_complaints,
         COUNT(*) FILTER (WHERE status = 'not completed') as pending_complaints,
         COUNT(*) FILTER (WHERE status = 'in-progress') as in_progress_complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as completed_complaints,
-        COALESCE(AVG(CASE WHEN status = 'completed' THEN EXTRACT(DAY FROM (updated_at - created_at)) END), 0) as avg_resolution_days
+        AVG(CASE WHEN status = 'completed' THEN EXTRACT(DAY FROM (updated_at - created_at)) END) as avg_resolution_days
       FROM problems p
       ${departmentFilter}
     `;
@@ -1159,6 +1157,7 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
     const statsResult = await client.query(statsQuery, queryParams);
     const stats = statsResult.rows[0];
 
+    // Get category breakdown
     const categoryQuery = `
       SELECT 
         unnest(problem_categories) as category,
@@ -1171,6 +1170,7 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const categoryResult = await client.query(categoryQuery, queryParams);
 
+    // Get recent complaints
     const recentQuery = `
       SELECT p.*, u.name as user_name
       FROM problems p
@@ -1182,37 +1182,23 @@ app.get('/api/analytics/dashboard', authenticateToken, async (req, res) => {
 
     const recentResult = await client.query(recentQuery, queryParams);
 
-    const categoryBreakdown = {};
-    categoryResult.rows.forEach(row => {
-      if (row.category && row.count) {
-        categoryBreakdown[row.category] = parseInt(row.count) || 0;
-      }
-    });
-
     const analytics = {
-      totalComplaints: parseInt(stats.total_complaints) || 0,
-      pendingComplaints: parseInt(stats.pending_complaints) || 0,
-      inProgressComplaints: parseInt(stats.in_progress_complaints) || 0,
-      completedComplaints: parseInt(stats.completed_complaints) || 0,
+      totalComplaints: parseInt(stats.total_complaints),
+      pendingComplaints: parseInt(stats.pending_complaints),
+      inProgressComplaints: parseInt(stats.in_progress_complaints),
+      completedComplaints: parseInt(stats.completed_complaints),
       avgResolutionDays: parseFloat(stats.avg_resolution_days) || 0,
-      categoryBreakdown: categoryBreakdown,
-      recentComplaints: recentResult.rows || []
+      categoryBreakdown: categoryResult.rows.reduce((acc, row) => {
+        acc[row.category] = parseInt(row.count);
+        return acc;
+      }, {}),
+      recentComplaints: recentResult.rows
     };
 
     res.json(analytics);
   } catch (error) {
     console.error('Get analytics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get analytics', 
-      details: error.message,
-      totalComplaints: 0,
-      pendingComplaints: 0,
-      inProgressComplaints: 0,
-      completedComplaints: 0,
-      avgResolutionDays: 0,
-      categoryBreakdown: {},
-      recentComplaints: []
-    });
+    res.status(500).json({ error: 'Failed to get analytics', details: error.message });
   }
 });
 
@@ -1227,36 +1213,22 @@ app.get('/api/analytics/departments', authenticateToken, async (req, res) => {
       SELECT 
         d.name,
         d.name_en,
-        COALESCE(COUNT(p.id), 0) as total_complaints,
-        COALESCE(COUNT(p.id) FILTER (WHERE p.status = 'completed'), 0) as resolved_complaints,
-        COALESCE(COUNT(p.id) FILTER (WHERE p.status = 'not completed'), 0) as pending_complaints,
-        COALESCE(AVG(CASE WHEN p.status = 'completed' THEN EXTRACT(DAY FROM (p.updated_at - p.created_at)) END), 0) as avg_resolution_days,
-        COALESCE(d.rating, 0) as rating,
-        COALESCE(d.total_workers, 0) as total_workers
+        COUNT(p.id) as total_complaints,
+        COUNT(p.id) FILTER (WHERE p.status = 'completed') as resolved_complaints,
+        COUNT(p.id) FILTER (WHERE p.status = 'not completed') as pending_complaints,
+        AVG(CASE WHEN p.status = 'completed' THEN EXTRACT(DAY FROM (p.updated_at - p.created_at)) END) as avg_resolution_days,
+        d.rating,
+        d.total_workers
       FROM departments d
       LEFT JOIN problems p ON d.name = p.assigned_department
       GROUP BY d.id, d.name, d.name_en, d.rating, d.total_workers
       ORDER BY resolved_complaints DESC
     `);
 
-    const departments = result.rows.map(dept => ({
-      ...dept,
-      total_complaints: parseInt(dept.total_complaints) || 0,
-      resolved_complaints: parseInt(dept.resolved_complaints) || 0,
-      pending_complaints: parseInt(dept.pending_complaints) || 0,
-      avg_resolution_days: parseFloat(dept.avg_resolution_days) || 0,
-      rating: parseFloat(dept.rating) || 0,
-      total_workers: parseInt(dept.total_workers) || 0
-    }));
-
-    res.json({ departments });
+    res.json({ departments: result.rows });
   } catch (error) {
     console.error('Get department analytics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get department analytics', 
-      details: error.message,
-      departments: []
-    });
+    res.status(500).json({ error: 'Failed to get department analytics', details: error.message });
   }
 });
 
@@ -1270,12 +1242,9 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
     let query = `
       SELECT 
         u.id, u.name, u.department,
-        COALESCE(w.total_assigned, 0) as total_assigned, 
-        COALESCE(w.total_completed, 0) as total_completed, 
-        COALESCE(w.efficiency_rating, 0) as efficiency_rating,
-        COALESCE(w.avg_completion_time, 0) as avg_completion_time, 
-        COALESCE(w.current_status, 'available') as current_status,
-        COALESCE(COUNT(p.id), 0) as active_assignments
+        w.total_assigned, w.total_completed, w.efficiency_rating,
+        w.avg_completion_time, w.current_status,
+        COUNT(p.id) as active_assignments
       FROM users u
       LEFT JOIN workers w ON u.id = w.user_id
       LEFT JOIN problems p ON u.id = p.assigned_worker_id AND p.status = 'in-progress'
@@ -1293,25 +1262,14 @@ app.get('/api/analytics/workers', authenticateToken, async (req, res) => {
 
     const result = await client.query(query, queryParams);
 
-    const workers = result.rows.map(worker => ({
-      ...worker,
-      total_assigned: parseInt(worker.total_assigned) || 0,
-      total_completed: parseInt(worker.total_completed) || 0,
-      efficiency_rating: parseFloat(worker.efficiency_rating) || 0,
-      avg_completion_time: parseFloat(worker.avg_completion_time) || 0,
-      active_assignments: parseInt(worker.active_assignments) || 0
-    }));
-
-    res.json({ workers });
+    res.json({ workers: result.rows });
   } catch (error) {
     console.error('Get worker analytics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get worker analytics', 
-      details: error.message,
-      workers: []
-    });
+    res.status(500).json({ error: 'Failed to get worker analytics', details: error.message });
   }
 });
+
+// ==================== ADDITIONAL ANALYTICS ROUTES ====================
 
 // Get Ward-wise Analytics
 app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
@@ -1320,72 +1278,36 @@ app.get('/api/analytics/wards', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized access' });
     }
 
-    let departmentFilter = '';
-    let queryParams = [];
-    
-    if (req.user.role === 'department-head') {
-      departmentFilter = 'WHERE assigned_department = $1';
-      queryParams.push(req.user.department);
-    }
-
+    // Mock ward data for now - in production, you'd have ward information in problems table
     const result = await client.query(`
       SELECT 
         CASE 
-          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1 - Civil Lines'
-          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2 - Mall Road'
-          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3 - Swaroop Nagar'
-          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4 - Kidwai Nagar'
-          ELSE 'Ward 5 - Other Areas'
-        END as name,
+          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 'Ward 1'
+          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 'Ward 2'
+          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 'Ward 3'
+          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 'Ward 4'
+          ELSE 'Ward 5'
+        END as ward,
         COUNT(*) as total_complaints,
-        COUNT(*) FILTER (WHERE status = 'completed') as resolved_complaints,
-        COUNT(*) FILTER (WHERE status = 'not completed') as pending_complaints,
-        CASE 
-          WHEN latitude BETWEEN 26.44 AND 26.46 THEN 75000
-          WHEN latitude BETWEEN 26.46 AND 26.48 THEN 85000
-          WHEN latitude BETWEEN 26.48 AND 26.50 THEN 65000
-          WHEN latitude BETWEEN 26.50 AND 26.52 THEN 90000
-          ELSE 55000
-        END as population
-      FROM problems p
-      ${departmentFilter}
-      GROUP BY name, population
-      ORDER BY name
-    `, queryParams);
+        COUNT(*) FILTER (WHERE status = 'completed') as resolved,
+        COUNT(*) FILTER (WHERE status = 'not completed') as pending
+      FROM problems
+      GROUP BY ward
+      ORDER BY ward
+    `);
 
-    const wards = result.rows.map(ward => ({
-      ...ward,
-      name_en: ward.name,
-      total_complaints: parseInt(ward.total_complaints) || 0,
-      resolved_complaints: parseInt(ward.resolved_complaints) || 0,
-      pending_complaints: parseInt(ward.pending_complaints) || 0,
-      population: parseInt(ward.population) || 50000
-    }));
-
-    res.json({ wards });
+    res.json({ wards: result.rows });
   } catch (error) {
     console.error('Get ward analytics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get ward analytics', 
-      details: error.message,
-      wards: []
-    });
+    res.status(500).json({ error: 'Failed to get ward analytics', details: error.message });
   }
 });
 
-// Get Real-time Activity Data
+// Get Real-time Activity Data (hourly breakdown for today)
 app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
   try {
     if (!['district-magistrate', 'department-head'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Unauthorized access' });
-    }
-
-    let departmentFilter = 'WHERE DATE(created_at) = CURRENT_DATE';
-    let queryParams = [];
-    
-    if (req.user.role === 'department-head') {
-      departmentFilter = `WHERE DATE(created_at) = CURRENT_DATE AND assigned_department = $1`;
-      queryParams.push(req.user.department);
     }
 
     const result = await client.query(`
@@ -1394,29 +1316,26 @@ app.get('/api/analytics/activity', authenticateToken, async (req, res) => {
         COUNT(*) as complaints,
         COUNT(*) FILTER (WHERE status = 'completed') as resolved
       FROM problems 
-      ${departmentFilter}
+      WHERE DATE(created_at) = CURRENT_DATE
       GROUP BY EXTRACT(HOUR FROM created_at)
       ORDER BY hour
-    `, queryParams);
+    `);
 
+    // Fill in missing hours with 0 values
     const activityData = [];
     for (let hour = 0; hour < 24; hour++) {
       const hourData = result.rows.find(row => parseInt(row.hour) === hour);
       activityData.push({
         time: `${hour.toString().padStart(2, '0')}:00`,
-        complaints: hourData ? parseInt(hourData.complaints) || 0 : 0,
-        resolved: hourData ? parseInt(hourData.resolved) || 0 : 0
+        complaints: hourData ? parseInt(hourData.complaints) : 0,
+        resolved: hourData ? parseInt(hourData.resolved) : 0
       });
     }
 
     res.json({ activity: activityData });
   } catch (error) {
     console.error('Get activity analytics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get activity analytics', 
-      details: error.message,
-      activity: []
-    });
+    res.status(500).json({ error: 'Failed to get activity analytics', details: error.message });
   }
 });
 
@@ -1428,14 +1347,6 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
     }
 
     const { limit = 20 } = req.query;
-
-    let departmentFilter = '';
-    let queryParams = [parseInt(limit.toString())];
-    
-    if (req.user.role === 'department-head') {
-      departmentFilter = `WHERE p.assigned_department = $2`;
-      queryParams.push(req.user.department);
-    }
 
     const result = await client.query(`
       SELECT 
@@ -1449,10 +1360,9 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
       FROM problem_status_history psh
       JOIN users u ON psh.updated_by_id = u.id
       JOIN problems p ON psh.problem_id = p.id
-      ${departmentFilter}
       ORDER BY psh.created_at DESC
       LIMIT $1
-    `, queryParams);
+    `, [parseInt(limit.toString())]);
 
     const activities = result.rows.map(row => ({
       id: row.problem_id,
@@ -1460,235 +1370,31 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
       description: row.notes || `Status changed to ${row.status}`,
       user: row.updated_by_name,
       timestamp: row.created_at,
-      category: (row.problem_categories && row.problem_categories.length > 0) ? row.problem_categories[0] : 'Other'
+      category: row.problem_categories[0] || 'Other'
     }));
 
     res.json({ activities });
   } catch (error) {
     console.error('Get recent activity error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get recent activity', 
-      details: error.message,
-      activities: []
-    });
+    res.status(500).json({ error: 'Failed to get recent activity', details: error.message });
   }
 });
 
-// Health check route
+// ==================== HEALTH CHECK ROUTE ====================
+
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Update existing problems with department assignments (Admin only)
-app.post('/api/admin/update-problems-departments', authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== 'district-magistrate') {
-      return res.status(403).json({ error: 'Only District Magistrate can update problem departments' });
-    }
+// ==================== ERROR HANDLING MIDDLEWARE ====================
 
-    console.log('🔄 Updating existing problems with department assignments...');
-    
-    // Get all problems without department assignments
-    const result = await client.query(`
-      SELECT id, problem_categories 
-      FROM problems 
-      WHERE assigned_department IS NULL OR assigned_department = ''
-    `);
-    
-    let updatedCount = 0;
-    let errorCount = 0;
-    
-    for (const problem of result.rows) {
-      try {
-        const assignedDepartments = assignDepartmentsToProblem(problem.problem_categories);
-        const primaryDepartment = assignedDepartments[0];
-        
-        // Update the problem with the first assigned department
-        await client.query(`
-          UPDATE problems 
-          SET assigned_department = $1, updated_at = CURRENT_TIMESTAMP
-          WHERE id = $2
-        `, [primaryDepartment, problem.id]);
-        
-        // Add status history for the assignment
-        await client.query(`
-          INSERT INTO problem_status_history (problem_id, status, updated_by_id, notes)
-          VALUES ($1, $2, $3, $4)
-        `, [problem.id, 'assigned', req.user.id, `Automatically assigned to ${primaryDepartment}`]);
-        
-        updatedCount++;
-      } catch (error) {
-        console.error(`Error updating problem ${problem.id}:`, error);
-        errorCount++;
-      }
-    }
-    
-    console.log(`✅ Updated ${updatedCount} problems with department assignments`);
-    
-    res.json({ 
-      message: 'Problems updated successfully',
-      updatedCount,
-      errorCount,
-      totalProcessed: result.rows.length
-    });
-  } catch (error) {
-    console.error('Error updating problems:', error);
-    res.status(500).json({ error: 'Failed to update problems', details: error.message });
-  }
-});
-
-// Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Initialize database tables
-async function initializeDatabase() {
-  try {
-    // Users table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        phone_number VARCHAR(20) UNIQUE NOT NULL,
-        aadhar VARCHAR(12) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        address TEXT,
-        role VARCHAR(50) DEFAULT 'citizen',
-        department VARCHAR(255),
-        avatar_url TEXT,
-        is_active BOOLEAN DEFAULT true,
-        last_login TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+// ==================== SERVER INITIALIZATION ====================
 
-    // Problems table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS problems (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
-        problem_categories TEXT[] NOT NULL,
-        others_text TEXT,
-        user_image_base64 TEXT NOT NULL,
-        user_image_mimetype VARCHAR(100) NOT NULL,
-        admin_image_base64 TEXT,
-        admin_image_mimetype VARCHAR(100),
-        latitude DECIMAL(10, 8) NOT NULL,
-        longitude DECIMAL(11, 8) NOT NULL,
-        status VARCHAR(50) DEFAULT 'not completed',
-        priority VARCHAR(20) DEFAULT 'medium',
-        assigned_worker_id INTEGER REFERENCES users(id),
-        assigned_department VARCHAR(255),
-        estimated_completion DATE,
-        completion_notes TEXT,
-        citizen_rating INTEGER CHECK (citizen_rating >= 1 AND citizen_rating <= 5),
-        citizen_feedback TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Workers table (extended user information for field workers)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS workers (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) UNIQUE,
-        specializations TEXT[],
-        efficiency_rating DECIMAL(3, 2) DEFAULT 0.0,
-        total_assigned INTEGER DEFAULT 0,
-        total_completed INTEGER DEFAULT 0,
-        avg_completion_time DECIMAL(5, 2), -- in hours
-        current_status VARCHAR(50) DEFAULT 'available',
-        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        location_lat DECIMAL(10, 8),
-        location_lng DECIMAL(11, 8),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Departments table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS departments (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        name_en VARCHAR(255) NOT NULL,
-        head_id INTEGER REFERENCES users(id),
-        description TEXT,
-        phone VARCHAR(20),
-        email VARCHAR(255),
-        location TEXT,
-        budget DECIMAL(15, 2),
-        established_year INTEGER,
-        status VARCHAR(50) DEFAULT 'active',
-        total_workers INTEGER DEFAULT 0,
-        total_complaints INTEGER DEFAULT 0,
-        resolved_complaints INTEGER DEFAULT 0,
-        avg_resolution_time DECIMAL(5, 2), -- in days
-        rating DECIMAL(3, 2) DEFAULT 0.0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Notifications table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(500) NOT NULL,
-        message TEXT NOT NULL,
-        type VARCHAR(50) NOT NULL, -- urgent, info, success, warning
-        priority VARCHAR(20) DEFAULT 'medium', -- high, medium, low
-        sender_id INTEGER REFERENCES users(id),
-        recipient_ids INTEGER[],
-        department VARCHAR(255),
-        category VARCHAR(50) NOT NULL, -- system, complaint, worker, citizen, department, emergency
-        related_problem_id INTEGER REFERENCES problems(id),
-        action_required BOOLEAN DEFAULT false,
-        expires_at TIMESTAMP,
-        is_read BOOLEAN DEFAULT false,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Problem status history table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS problem_status_history (
-        id SERIAL PRIMARY KEY,
-        problem_id INTEGER REFERENCES problems(id),
-        status VARCHAR(50) NOT NULL,
-        updated_by_id INTEGER REFERENCES users(id),
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Analytics table for storing computed metrics
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS analytics (
-        id SERIAL PRIMARY KEY,
-        metric_name VARCHAR(100) NOT NULL,
-        metric_value DECIMAL(15, 2),
-        metric_data JSONB,
-        department VARCHAR(255),
-        date_range_start DATE,
-        date_range_end DATE,
-        computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    console.log('All database tables initialized successfully');
-  } catch (error) {
-    console.error('Database initialization error:', error);
-    throw error;
-  }
-}
-
-// Server initialization
 async function startServer() {
   try {
     await connectDatabase();
@@ -1705,7 +1411,7 @@ async function startServer() {
       console.log('    GET /api/users - Get all users (admin)');
       console.log('  🚨 Problem Management:');
       console.log('    POST /api/analyze-image - AI image analysis');
-      console.log('    POST /api/problems - Submit problem (with auto department assignment)');
+      console.log('    POST /api/problems - Submit problem');
       console.log('    GET /api/problems/user/:user_id - Get user problems');
       console.log('    GET /api/admin/problems - Get all problems (admin)');
       console.log('    POST /api/admin/problems/:id/complete - Mark completed');
@@ -1728,9 +1434,6 @@ async function startServer() {
       console.log('    GET /api/analytics/dashboard - Dashboard analytics');
       console.log('    GET /api/analytics/departments - Department performance');
       console.log('    GET /api/analytics/workers - Worker performance');
-      console.log('    GET /api/analytics/wards - Ward analytics');
-      console.log('    GET /api/analytics/activity - Real-time activity');
-      console.log('    GET /api/analytics/recent-activity - Recent activity feed');
       console.log('  🏥 Health:');
       console.log('    GET /health - Health check');
     });
@@ -1747,11 +1450,4 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// For Vercel deployment, export the app instead of starting the server
-if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
-  // Export for Vercel
-  module.exports = app;
-} else {
-  // Start server locally
-  startServer();
-}
+startServer();

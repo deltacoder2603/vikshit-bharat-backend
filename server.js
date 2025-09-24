@@ -18,7 +18,7 @@ const corsOptions = {
 };
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
@@ -33,11 +33,11 @@ const upload = multer({
 });
 
 // Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'AIzaSyADv0-3bQ_72nKlxQwzOI9UvXhu7_sn9Go');
 
 // Neon PostgreSQL client
 const client = new Client({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_nR3aPSIK5gZQ@ep-misty-rice-adw2676l-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require',
   ssl: {
     rejectUnauthorized: false
   }
@@ -63,7 +63,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'default_secret', (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'vikshit-bharat-secret-key-2024', (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -210,7 +210,7 @@ function generateToken(user) {
       email: user.email, 
       role: user.role 
     },
-    process.env.JWT_SECRET || 'default_secret',
+    process.env.JWT_SECRET || 'vikshit-bharat-secret-key-2024',
     { expiresIn: '7d' }
   );
 }
